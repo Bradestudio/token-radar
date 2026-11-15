@@ -1,4 +1,4 @@
-# Token Radar entry — build plan (radar-2)
+# Token Radar entry — build plan (radar-3)
 
 ## Goal
 A valid, competitive entry for make.fun token-radar-01. Deadline 14 Dec 2026 17:00 WIB.
@@ -115,6 +115,100 @@ determinism check (run main.ts twice, compare bytes).
   must attach --muse-usage from muse.db after this run completes (subagent rows
   are written only once the run completes). Old 8 Nov sessions correctly excluded
   (pre-opening).
+
+## Revision (radar-3, 15 Nov ~06:30 WIB) — why the model changed
+
+Snapshot numbers that forced the change (198 board rows, same snapshot, same
+exclusion rule — the board definition did not change):
+
+- **The ceiling problem was real.** 19 rows implied more than 100% of their
+  category's total live-token mcap, 9 more sat at 50–100%, 19 more at 25–50%,
+  and 18 rows were in categories with no live comps at all. Rank 1 Steakhouse
+  Financial implied $593.1M — 1,693% of Risk Curators' whole $35M live mcap.
+  Risk Curators alone held 34 board rows against $35M of traded value. No
+  judge can trust a ranking whose top row claims 17× its category.
+- **Age was nearly flat.** The old maturity curve barely separated a 2-day-old
+  protocol from a 5-year-old one, yet 27 of 198 rows are under 90 days old and
+  4 are under 30 days — the riskiest slice of the board.
+- **Growth was the only signal with a fat tail.** change_7d: only 6 rows above
+  +60%, 140 of 198 negative. A single-week spike is not durable value, and
+  with only change_7d in the snapshot there is no way to tell a healthy
+  climb from a one-off spike — so the fix is a cap, not a new factor.
+
+Changes, all in `lib/model.ts` + mirrored in `dashboard/app.js` (same formulas,
+same constants — the drawer recomputes each row from the stored figures):
+
+1. **Category ceiling** (`ceiling_share` 0.5): implied value is capped at 50% of
+   the category's total live-token mcap, when the category has live tokens;
+   no ceiling when it has none. **29 rows hit the ceiling.** Steakhouse
+   Financial falls rank 1 → 36 ($593.1M → $17.5M, the ceiling); Gauntlet
+   rank 30 ($17.5M, capped), Veda rank 49 ($13.7M, capped at half of Onchain
+   Capital Allocator's $27.5M), Nonce Capital rank 33 ($17.5M, capped),
+   USDD rank 71 ($7.9M, capped at half of CDP's $15.9M). New rank 1 is
+   BitFi Basis, $116.2M (Basis Trading, $1.58B live, ceiling $789.9M, not
+   capped). New top 10: BitFi Basis $116.2M, Bittensor dTAO $78.6M, OnRe
+   $70.5M, Polymarket International $68.1M, OpenTrade $62.0M, Plume Vaults
+   $58.4M, DeFi Saver Asset Management $51.0M, Symbiotic $48.9M, R25 $44.0M,
+   Circle Gateway $36.8M (capped). Implied range is now $116.2M → $79K.
+2. **Sharper age curve** (piecewise, kink at 90 days): 0.5 + 0.3×age/90 below
+   90 days (a 2-day-old protocol scores 0.507), then 0.8 + 0.2×(age−90)/1005
+   to 1.0 at 1,095 days; unknown age counts as 365 days. Range on the board:
+   0.507–1.000. The kink says the first three months are where the risk
+   lives; after that, trust accrues slowly.
+3. **Growth cap 100 → 60** (`growth_cap` 60): growth multiplier now ranges
+   0.750–1.300. A +60% week already earns the maximum 1.3×; anything above
+   that is treated as a spike, not more value. No new growth factor was
+   invented — the snapshot has only change_7d.
+4. **Farm plans** (`riskFor` + `farmSummary`): every row's plan now ends with
+   a summary step — plan totals (gas + capital at risk + active minutes over
+   the hold days) plus one risk note per category (~25 keyword-matched
+   branches + default). 7–8 steps per row, 116–221 chars per step. Also
+   fixed an ordering bug: Indexes rows were getting the dex action (the dex
+   check ran first); the index check now runs first in both files.
+5. **Dashboard** (51,158 bytes total, budget 64 KB): methodology paragraph in
+   the model panel (ceiling, age curve, growth cap, "does not predict
+   issuance", capped count computed at runtime); ceiling column in the
+   category-multiples table; ceiling rows in the detail drawer (category
+   traded value, ceiling, capped yes/no); **TVL filter** (≥$50M/$100M/$500M/
+   $1B) + **age filter** (under 90d / 90d–1y / over 1y / unknown), both in the
+   URL hash; **top-10 SVG radar panel** (log scale, spokes + legend, pure
+   inline SVG, no network). No http(s) in any HTML attribute, CSS, or JS
+   import. `main.ts` header now says radar-3; `MODEL_VERSION` = `'radar-3'`.
+6. **Screenshots** (new, 1440×900, via headless Chromium + CDP — helper
+   re-created at /tmp/shots.mjs): 1-board 146 KB (radar panel + new filters),
+   2-detail 199 KB (rank 1 drawer, ceiling rows visible), 3-filtered 147 KB
+   (TVL $500M+ → 6 rows shown). Notes from retaking them: plain
+   `--screenshot` still exits silently on this build; the WebGL policy file
+   must list a *registrable* domain (`localhost` is rejected as
+   non-registrable — `example.com` works); `http://localhost:8123` is blocked
+   by Local Network Access checks, so the shots load the dashboard from
+   `file:///tmp/out1/dashboard/index.html` instead; a hash-only navigation
+   does not reload the page, so each shot URL carries a distinct `?v=N`
+   before the hash.
+
+## Verification (radar-3, 15 Nov ~06:30 WIB)
+
+- Determinism PASS: `main.ts` run 2× from a fresh snapshot, `diff -r` clean.
+- 7 local gates, all PASS (script /tmp/gates.mjs): dashboard_files (index.html
+  + app.css + app.js, 51,158 bytes, no-network-clean), board_file (198 rows),
+  sorted_by_value ($116,163,606 → $79,215), coverage (40/40 watchlist),
+  farm_steps (7–8 steps/row, 116–221 chars), screenshots (3 × 1440×900 PNG,
+  146/199/147 KB), dossier_matches (buildDossier rebuild byte-identical).
+- `makefun check --kit . --repo <entry>` (no --transcripts): **4 passed, 1
+  failed, 13 skipped, 5 at submission** — the 1 fail is transcripts_present,
+  expected pre-bundle (same as radar-2). Board still 198 rows, ranks 1..198
+  unique, implied non-increasing.
+- Dashboard↔board consistency (live page, CDP): top-10 radar SVG present
+  (1 polygon, 10 points, 10 legend entries); detail drawer recompute reads
+  "the same number board.json carries" for 3 rows (bitfi-basis, rank 1, not
+  capped; steakhouse-financial, rank 36, capped; nonce-capital, rank 33,
+  capped) and the drawer's farm steps match board.json exactly for all
+  three; TVL filter $500M+ shows 6 rows, matching board.json.
+- Secrets: none in the changed files (grep for api-key/secret/private-key/
+  keypair patterns clean). vendor/ and LICENSE byte-identical (0 diff lines).
+- Changed files: lib/model.ts, dashboard/app.js, dashboard/app.css, main.ts
+  (header comment only), screenshots ×3, PLAN.md. **Not pushed, not
+  submitted** — parent handles push + resubmit.
 
 ## Still open (not this build's job)
 - Andi creates the public GitHub repo (suggested name token-radar) + push access;

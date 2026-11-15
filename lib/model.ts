@@ -1,4 +1,4 @@
-// The token radar's model (radar-2): one snapshot of the protocol universe in, one ranked board out.
+// The token radar's model (radar-3): one snapshot of the protocol universe in, one ranked board out.
 //
 // The board covers every rankable pre-token protocol: the snapshot's whole watchlist (the floor,
 // never a ceiling) plus every pre-token protocol below the floor that passes the watchlist's own
@@ -11,19 +11,21 @@
 // Implied value follows only from the snapshot's own figures:
 //
 //   categoryMultiple = shrunk median mcap/TVL of the live-token protocols in the same category
-//   growthMult       = 1 + clamp(change_7d, -50, 100) / 100 x 0.5
-//   maturityMult     = 0.7 + 0.3 x min(age_days, 1095) / 1095   (age unknown: 365 days)
+//   growthMult       = 1 + clamp(change_7d, -50, 60) / 100 x 0.5
+//   maturityMult     = 0.5 + 0.3 x age/90 below 90 days, then 0.8 + 0.2 x (age-90)/1005 to 1095 days
+//                      (age unknown: 365 days)
 //   breadthMult      = 1 + 0.04 x min(chains - 1, 5)
-//   implied          = max(1, round(tvl_usd x categoryMultiple x growthMult x maturityMult x breadthMult))
+//   ceiling          = 0.5 x the category's total live-token market cap, when the category has one
+//   implied          = max(1, round(min(tvl_usd x categoryMultiple x growthMult x maturityMult
+//                      x breadthMult, ceiling)))
 //
-// The headline is the category multiple: a token is priced off what tokens in the same category
-// actually trade at, so a lending protocol is not scored with a dex's multiple. The multiple is
-// computed from the snapshot at runtime — the median market-cap-to-TVL ratio of the live-token
-// protocols in the category, shrunk toward the global median (3 pseudo-observations) and clamped
-// to [0.05, 1.5], so a category with one thin comp cannot run away with the board. A category
-// counts only with two or more live tokens trading; with fewer it is priced at the global
-// median, and a token whose market cap records as zero is no comp at all. No protocol name is
-// ever special-cased: the same function scores every row.
+// Three radar-3 judgements, each from the snapshot's own numbers (see PLAN.md for the counts):
+// the ceiling stops one protocol claiming more than half of everything its category's tokens
+// are worth — the old board had 19 rows above their whole category's traded value, the top one
+// at 17x it. The age curve is sharpest in the first 90 days, the window where a protocol most
+// often fails, and flattens after it. The growth cap is 60% because the snapshot carries a
+// single week, and a single week's spike is not durable value: only 6 of 198 rows sit above it.
+// No protocol name is ever special-cased: the same function scores every row.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -56,6 +58,8 @@ export interface ModelConstants {
   maturity_floor: number;
   maturity_range: number;
   maturity_days: number;
+  maturity_kink_days: number;
+  maturity_kink_value: number;
   unknown_age_days: number;
   comp_shrink: number;
   comp_min: number;
@@ -64,15 +68,18 @@ export interface ModelConstants {
   comp_median_max: number;
   breadth_step: number;
   breadth_max_chains: number;
+  ceiling_share: number;
 }
 
 export const MODEL: ModelConstants = {
   growth_weight: 0.5,
   growth_floor: -50,
-  growth_cap: 100,
-  maturity_floor: 0.7,
-  maturity_range: 0.3,
+  growth_cap: 60,
+  maturity_floor: 0.5,
+  maturity_range: 0.5,
   maturity_days: 1095,
+  maturity_kink_days: 90,
+  maturity_kink_value: 0.8,
   unknown_age_days: 365,
   comp_shrink: 3,
   comp_min: 0.05,
@@ -81,10 +88,11 @@ export const MODEL: ModelConstants = {
   comp_median_max: 2.0,
   breadth_step: 0.04,
   breadth_max_chains: 5,
+  ceiling_share: 0.5,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -116,6 +124,9 @@ export interface BoardRow {
   model: {
     category_multiple: number;
     category_comps: number;
+    category_live_mcap_usd: number;
+    ceiling_usd: number | null;
+    capped: boolean;
     growth_pct: number;
     growth_multiplier: number;
     maturity_multiplier: number;
@@ -141,6 +152,9 @@ export interface RadarRow {
   on_watchlist: boolean;
   category_multiple: number;
   category_comps: number;
+  category_live_mcap_usd: number;
+  ceiling_usd: number | null;
+  capped: boolean;
   growth_multiplier: number;
   maturity_multiplier: number;
   breadth_multiplier: number;
@@ -163,6 +177,8 @@ export interface CategoryMultiple {
   multiple: number;
   comps: number;
   median: number | null;
+  live_mcap_usd: number;
+  ceiling_usd: number | null;
 }
 
 /** Everything the dashboard needs: the board, the live set, and the model it runs. */
@@ -255,53 +271,74 @@ export function isRankable(p: SnapshotProtocol): boolean {
  * is no comp at all. Categories with no live comps take the global median, so no row is ever
  * priced by a number the snapshot does not carry.
  */
-export function categoryMultiples(snapshot: Snapshot, model: ModelConstants = MODEL): { global: number; byCategory: Map<string, CategoryMultiple> } {
+export function categoryMultiples(snapshot: Snapshot, model: ModelConstants = MODEL): { global: number; byCategory: Map<string, CategoryMultiple>; liveMcapByCategory: Map<string, number> } {
   const live = snapshot.protocols.filter((p) => !isPreToken(p) && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
   const global = median(live.map((p) => p.mcap_usd! / p.tvl_usd)) ?? 0.2;
   const byCat = new Map<string, number[]>();
+  const liveMcapByCategory = new Map<string, number>();
   for (const p of live) {
     const key = p.category ?? 'Other';
     const list = byCat.get(key);
     if (list) list.push(p.mcap_usd! / p.tvl_usd);
     else byCat.set(key, [p.mcap_usd! / p.tvl_usd]);
+    liveMcapByCategory.set(key, (liveMcapByCategory.get(key) ?? 0) + p.mcap_usd!);
   }
   const byCategory = new Map<string, CategoryMultiple>();
   for (const [category, ratios] of byCat) {
+    const liveMcap = liveMcapByCategory.get(category) ?? 0;
+    const ceiling = liveMcap > 0 ? Math.round(liveMcap * model.ceiling_share) : null;
     if (ratios.length < 2) {
-      byCategory.set(category, { category, multiple: clamp(global, model.comp_min, model.comp_max), comps: 0, median: null });
+      byCategory.set(category, { category, multiple: clamp(global, model.comp_min, model.comp_max), comps: 0, median: null, live_mcap_usd: liveMcap, ceiling_usd: ceiling });
       continue;
     }
     const med = median(ratios) ?? global;
     const shrunk = (ratios.length * clamp(med, model.comp_median_min, model.comp_median_max) + model.comp_shrink * global) / (ratios.length + model.comp_shrink);
-    byCategory.set(category, { category, multiple: clamp(shrunk, model.comp_min, model.comp_max), comps: ratios.length, median: med });
+    byCategory.set(category, { category, multiple: clamp(shrunk, model.comp_min, model.comp_max), comps: ratios.length, median: med, live_mcap_usd: liveMcap, ceiling_usd: ceiling });
   }
-  return { global, byCategory };
+  return { global, byCategory, liveMcapByCategory };
 }
 
 /** The multiple one protocol's category carries, with its comp count. */
-export function multipleFor(p: SnapshotProtocol, table: { global: number; byCategory: Map<string, CategoryMultiple> }, model: ModelConstants = MODEL): { multiple: number; comps: number; median: number | null } {
+export function multipleFor(p: SnapshotProtocol, table: { global: number; byCategory: Map<string, CategoryMultiple>; liveMcapByCategory: Map<string, number> }, model: ModelConstants = MODEL): { multiple: number; comps: number; median: number | null; liveMcap: number; ceiling: number | null } {
+  const liveMcap = table.liveMcapByCategory.get(p.category ?? 'Other') ?? 0;
+  const ceiling = liveMcap > 0 ? Math.round(liveMcap * model.ceiling_share) : null;
   const entry = table.byCategory.get(p.category ?? 'Other');
-  if (entry === undefined) return { multiple: clamp(table.global, model.comp_min, model.comp_max), comps: 0, median: null };
-  return { multiple: entry.multiple, comps: entry.comps, median: entry.median };
+  if (entry === undefined) return { multiple: clamp(table.global, model.comp_min, model.comp_max), comps: 0, median: null, liveMcap, ceiling };
+  return { multiple: entry.multiple, comps: entry.comps, median: entry.median, liveMcap, ceiling };
+}
+
+/**
+ * The maturity credit for an age in days: the first 90 days are the riskiest window, so the
+ * curve climbs fastest there (0.5 at day zero to 0.8 at day 90), then slowly to 1.0 at 1095
+ * days. A protocol younger than a month keeps barely half its TVL-implied value; one that has
+ * run three years with no token keeps all of it.
+ */
+export function maturityMult(age: number | null, model: ModelConstants = MODEL): number {
+  const a = clamp(age ?? model.unknown_age_days, 0, model.maturity_days);
+  if (a <= model.maturity_kink_days) {
+    return model.maturity_floor + (model.maturity_kink_value - model.maturity_floor) * (a / model.maturity_kink_days);
+  }
+  return model.maturity_kink_value + (1 - model.maturity_kink_value) * ((a - model.maturity_kink_days) / (model.maturity_days - model.maturity_kink_days));
 }
 
 /** The multipliers and the implied value one protocol gets under `model`. */
 export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
-  table: { global: number; byCategory: Map<string, CategoryMultiple> },
+  table: { global: number; byCategory: Map<string, CategoryMultiple>; liveMcapByCategory: Map<string, number> },
   model: ModelConstants = MODEL,
-): { implied: number; multiple: number; comps: number; growthPct: number; growthMult: number; maturityMult: number; breadthMult: number; age: number | null } {
+): { implied: number; multiple: number; comps: number; liveMcap: number; ceiling: number | null; capped: boolean; growthPct: number; growthMult: number; maturityMult: number; breadthMult: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
-  const { multiple, comps } = multipleFor(protocol, table, model);
+  const { multiple, comps, liveMcap, ceiling } = multipleFor(protocol, table, model);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = clamp(rawGrowth, model.growth_floor, model.growth_cap);
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
-  const ageForModel = age ?? model.unknown_age_days;
-  const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
+  const maturity = maturityMult(age, model);
   const breadthMult = 1 + model.breadth_step * Math.min(Math.max(protocol.chains.length - 1, 0), model.breadth_max_chains);
-  const implied = Math.max(1, Math.round(protocol.tvl_usd * multiple * growthMult * maturityMult * breadthMult));
-  return { implied, multiple, comps, growthPct, growthMult, maturityMult, breadthMult, age };
+  const raw = Math.max(1, Math.round(protocol.tvl_usd * multiple * growthMult * maturity * breadthMult));
+  const capped = ceiling !== null && raw > ceiling;
+  const implied = capped ? ceiling! : raw;
+  return { implied, multiple, comps, liveMcap, ceiling, capped, growthPct, growthMult, maturityMult: maturity, breadthMult, age };
 }
 
 /** The snapshot's protocol by slug. */
@@ -350,6 +387,9 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     model: {
       category_multiple: round4(s.multiple),
       category_comps: s.comps,
+      category_live_mcap_usd: s.liveMcap,
+      ceiling_usd: s.ceiling,
+      capped: s.capped,
       growth_pct: round4(s.growthPct),
       growth_multiplier: round4(s.growthMult),
       maturity_multiplier: round4(s.maturityMult),
@@ -362,6 +402,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
 
 /** A step as one string: its action, then its cost and time, within the gate's 20..600 characters. */
 export function stepText(step: FarmStep): string {
+  if (step.text.startsWith('Plan total:')) return step.text;
   let s = `${step.text} Cost: ${step.cost}. Time: ${step.time}.`;
   if (s.length > 600) s = `${s.slice(0, 596)}...`;
   if (s.length < 20) s = `${s} Hold the position and check the protocol's own page.`;
@@ -513,6 +554,7 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
   const c = (p.category ?? '').toLowerCase();
   const name = p.name;
   if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return `Supply $${capital} of USDC to ${name} on ${chain} and keep the position open.`;
+  if (c.includes('index')) return `Buy $${capital} of ${name}'s index tokens on ${chain} and hold them.`;
   if (c.includes('dex')) return `Provide $${capital} of liquidity to ${name}'s main pool on ${chain} and keep the position open.`;
   if (c.includes('yield aggregator') || c.includes('yield') || c.includes('leveraged farm') || c.includes('farm')) return `Deposit $${capital} of USDC into ${name}'s main yield vault on ${chain} and keep the shares.`;
   if (c.includes('risk curator') || c.includes('capital allocator') || c.includes('curator') || c.includes('allocator')) return `Deposit $${capital} into a ${name} vault on ${chain} and keep the shares.`;
@@ -525,7 +567,6 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
   if (c.includes('rwa')) return `Mint $${capital} of the protocol's yield asset on ${chain} and hold it.`;
   if (c.includes('insurance')) return `Buy $${capital} of cover from ${name} on ${chain} and keep the policy.`;
   if (c.includes('anchor btc') || c.includes('decentralized btc')) return `Mint $${capital} of the BTC-backed asset through ${name} on ${chain} and hold it.`;
-  if (c.includes('index')) return `Buy $${capital} of ${name}'s index tokens on ${chain} and hold them.`;
   if (c.includes('payment') || c.includes('card')) return `Load $${capital} through ${name} on ${chain} and spend once from it.`;
   if (c.includes('governance')) return `Deposit $${capital} into ${name} on ${chain} and vote in one governance round.`;
   if (c.includes('otc')) return `Complete one $${capital} trade through ${name} on ${chain}.`;
@@ -538,6 +579,7 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
 function weeklyActionFor(p: SnapshotProtocol): string {
   const c = (p.category ?? '').toLowerCase();
   if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return 'a deposit, a borrow or a repayment';
+  if (c.includes('index')) return 'a rebalance check or a vote';
   if (c.includes('dex') || c.includes('liquidity manager')) return 'a swap or a liquidity adjustment';
   if (c.includes('bridge')) return 'a bridge transfer';
   if (c.includes('staking') || c.includes('restak')) return 'a stake, a restake or a claim';
@@ -548,7 +590,64 @@ function weeklyActionFor(p: SnapshotProtocol): string {
 }
 
 /**
- * A protocol's farm plan: six steps, seven when it runs on three or more chains. Every step is
+ * The one risk that can break this category's farm: a single sentence, from the category's
+ * own shape, never from a protocol's name. Every category on the board has one.
+ */
+export function riskFor(p: SnapshotProtocol): string {
+  const c = (p.category ?? '').toLowerCase();
+  if (c.includes('anchor btc') || c.includes('decentralized btc')) return 'Risk: the BTC backing can slip below one BTC, and redemptions can queue when everyone exits at once.';
+  if (c.includes('basis trading')) return 'Risk: funding can flip against the basis trade, and the hedge can move faster than the position.';
+  if (c.includes('cedefi')) return 'Risk: part of the product is custodial, so the operator staying solvent is part of the bet.';
+  if (c.includes('bridge')) return 'Risk: a bridge pause or a wrapped-asset depeg can strand funds on the far chain.';
+  if (c.includes('cdp') || c.includes('collateral')) return 'Risk: a sharp collateral drop can liquidate the vault, and a governance pause can freeze withdrawals.';
+  if (c.includes('card')) return 'Risk: the card program can pause or change terms, so keep only spending money on it.';
+  if (c.includes('chain')) return 'Risk: the chain itself is young, so a halt or an outage strands every position built on it.';
+  if (c.includes('index')) return 'Risk: the index can rebalance into a falling asset, so the basket is only as good as its worst holding.';
+  if (c.includes('dex')) return 'Risk: impermanent loss can eat the yield if the pool ratio moves, and a thin pool can strand the position.';
+  if (c.includes('derivative') || c.includes('perpetual')) return 'Risk: a sharp move can liquidate the hedge, and funding can flip and start charging the position.';
+  if (c.includes('governance')) return 'Risk: a vote can change the rules the farm depends on, so the position is a bet on the next decision.';
+  if (c.includes('insurance')) return 'Risk: a claim can be denied by governance, and cover only pays when the policy trigger fires exactly.';
+  if (c.includes('interest rate')) return 'Risk: a rate move can reprice the position against you, and fixed terms can lock a bad rate in.';
+  if (c.includes('lend')) return 'Risk: a bad-debt event or a governance pause can freeze withdrawals; never farm with funds you need back soon.';
+  if (c.includes('liquidity manager')) return 'Risk: the manager can rebalance into a losing range, and its fees are charged whether it wins or not.';
+  if (c.includes('otc')) return 'Risk: the counterparty can fail to settle, and a large trade can move the price against you.';
+  if (c.includes('curator') || c.includes('allocator')) return 'Risk: the curator allocations are opaque and can rotate; one bad allocation can cut the vault value.';
+  if (c.includes('payment')) return 'Risk: the payment rail can pause or change fees, so keep only spending money in the position.';
+  if (c.includes('prediction')) return 'Risk: a market can resolve against the position, and the payout is all or nothing.';
+  if (c.includes('rwa')) return 'Risk: the off-chain asset can default, and its issuer can freeze redemptions.';
+  if (c.includes('restak') || c.includes('staking')) return 'Risk: slashing or an unstaking queue can delay exit, and the receipt token can trade below its backing.';
+  if (c.includes('stable')) return 'Risk: a depeg breaks the peg the plan assumes, and the stable asset is only as good as its backing.';
+  if (c.includes('uncollateralized')) return 'Risk: the borrower can default with no collateral behind the loan, so the loss can be total.';
+  if (c.includes('leveraged farm') || c.includes('farm') || c.includes('yield')) return 'Risk: the vault strategy can change and its rewards can dry up; check the live APY before each deposit.';
+  return 'Risk: the protocol is young and its token may never come; farm only with funds you can afford to leave.';
+}
+
+/**
+ * The plan's totals, summed from the same numbers the steps use: the capital at risk, the gas
+ * across every transaction the plan asks for (setup, the second chain when there is one, and one
+ * weekly action for each week of the hold), and the active minutes spread over the hold days.
+ */
+export function farmSummary(p: SnapshotProtocol, age: number | null): FarmStep {
+  const chain = chainOf(p);
+  const gas = gasUsd(chain);
+  const capital = capitalFor(p);
+  const hold = holdDaysFor(age);
+  const weeks = Math.ceil(hold / 7);
+  const multi = p.chains.length >= 3;
+  const secondGas = multi ? gasUsd(p.chains[1]!) : 0;
+  const gasTotal = Math.max(1, Math.ceil(gas * 2)) + (multi ? Math.max(1, Math.ceil(secondGas * 2)) : 0) + Math.max(1, Math.ceil(gas)) * weeks;
+  const capitalTotal = capital + (multi ? Math.floor(capital / 2) : 0);
+  const activeMin = 5 + 15 + (multi ? 20 : 0) + 10 * weeks + 10 + 5;
+  return {
+    text: `Plan total: about $${gasTotal} in gas and $${capitalTotal} of capital at risk, about ${activeMin} minutes of active work spread over ${hold} days. ${riskFor(p)}`,
+    cost: `$${gasTotal} in gas and $${capitalTotal} of capital at risk`,
+    time: `${hold} days`,
+  };
+}
+
+/**
+ * A protocol's farm plan: six steps, seven when it runs on three or more chains, plus a final
+ * line totalling the plan's cost and time and naming the category's one risk. Every step is
  * derived from the protocol's own record (category, chains, TVL, age), never from a hand-written
  * list of names. Each step states what it costs and how long it takes.
  */
@@ -602,6 +701,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       time: '5 minutes',
     },
   );
+  steps.push(farmSummary(p, age));
   return steps;
 }
 
@@ -639,6 +739,9 @@ export function radarRow(row: BoardRow): RadarRow {
     on_watchlist: row.on_watchlist,
     category_multiple: row.model.category_multiple,
     category_comps: row.model.category_comps,
+    category_live_mcap_usd: row.model.category_live_mcap_usd,
+    ceiling_usd: row.model.ceiling_usd,
+    capped: row.model.capped,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
     breadth_multiplier: row.model.breadth_multiplier,
