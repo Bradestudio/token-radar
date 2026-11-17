@@ -1,4 +1,4 @@
-// Token Radar's dark dashboard. It reads window.RADAR (written beside dashboard/ by main.ts)
+// Token Radar's dark dashboard (radar-4). It reads window.RADAR (written beside dashboard/ by main.ts)
 // and renders the ranked board, a filterable table, a per-protocol detail drawer with the
 // model's own inputs and the protocol's farm plan. No network: every byte it shows is in data.js.
 (function () {
@@ -150,8 +150,10 @@
     if (c.indexOf('leveraged farm') >= 0 || c.indexOf('farm') >= 0 || c.indexOf('yield') >= 0) return 'Risk: the vault strategy can change and its rewards can dry up; check the live APY before each deposit.';
     return 'Risk: the protocol is young and its token may never come; farm only with funds you can afford to leave.';
   }
-  // The plan's totals, summed from the same numbers the steps use: capital, gas and active minutes.
-  function farmSummary(p) {
+  // The plan's totals, summed from the same numbers the steps use and split the way a farmer's
+  // wallet feels them: the sunk cost is gas, gone even if the farm pays nothing; the capital at
+  // risk is the deposit, recoverable on exit.
+  function farmTotals(p) {
     var chain = chainOf(p);
     var gas = gasUsd(chain);
     var capital = capitalFor(p);
@@ -159,10 +161,14 @@
     var weeks = Math.ceil(hold / 7);
     var multi = p.chains && p.chains.length >= 3;
     var secondGas = multi ? gasUsd(p.chains[1]) : 0;
-    var gasTotal = Math.max(1, Math.ceil(gas * 2)) + (multi ? Math.max(1, Math.ceil(secondGas * 2)) : 0) + Math.max(1, Math.ceil(gas)) * weeks;
+    var sunk = Math.max(1, Math.ceil(gas * 2)) + (multi ? Math.max(1, Math.ceil(secondGas * 2)) : 0) + Math.max(1, Math.ceil(gas)) * weeks;
     var capitalTotal = capital + (multi ? Math.floor(capital / 2) : 0);
     var activeMin = 5 + 15 + (multi ? 20 : 0) + 10 * weeks + 10 + 5;
-    return { text: 'Plan total: about $' + gasTotal + ' in gas and $' + capitalTotal + ' of capital at risk, about ' + activeMin + ' minutes of active work spread over ' + hold + ' days. ' + riskFor(p), cost: '$' + gasTotal + ' in gas and $' + capitalTotal + ' of capital at risk', time: hold + ' days' };
+    return { sunk: sunk, capital: capitalTotal, hold: hold, activeMin: activeMin };
+  }
+  function farmSummary(p) {
+    var t = farmTotals(p);
+    return { text: 'Plan total: about $' + t.sunk + ' sunk in gas (gone even if the farm pays nothing) plus $' + t.capital + ' of capital at risk (recoverable on exit), about ' + t.activeMin + ' minutes of active work spread over ' + t.hold + ' days. ' + riskFor(p), cost: '$' + t.sunk + ' sunk in gas plus $' + t.capital + ' of capital at risk', time: t.hold + ' days' };
   }
   function stepText(step) {
     if (step.text.indexOf('Plan total:') === 0) return step.text;
@@ -177,19 +183,19 @@
     var capital = capitalFor(p);
     var hold = holdDaysFor(p.age_days);
     var steps = [
-      { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: 'under $' + Math.max(1, Math.ceil(gas)) + ' of gas on ' + chain + ' for the first transaction', time: '5 minutes' },
-      { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + Math.max(1, Math.ceil(gas * 2)) + ' of gas on ' + chain + ' for two transactions', time: '15 minutes to set up' }
+      { text: 'Day 1 — Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: 'under $' + Math.max(1, Math.ceil(gas)) + ' of gas on ' + chain + ' for the first transaction', time: '5 minutes' },
+      { text: 'Day 1 — ' + actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + Math.max(1, Math.ceil(gas * 2)) + ' of gas on ' + chain + ' for two transactions', time: '15 minutes to set up' }
     ];
     if (p.chains && p.chains.length >= 3) {
       var second = p.chains[1];
       var gas2 = gasUsd(second);
-      steps.push({ text: 'Repeat half the position, $' + Math.floor(capital / 2) + ', on ' + second + ' as well, so the activity shows on a second chain.', cost: '$' + Math.floor(capital / 2) + ' of capital and about $' + Math.max(1, Math.ceil(gas2 * 2)) + ' of gas on ' + second, time: '20 minutes' });
+      steps.push({ text: 'Day 2 — Repeat half the position, $' + Math.floor(capital / 2) + ', on ' + second + ' as well, so the activity shows on a second chain.', cost: '$' + Math.floor(capital / 2) + ' of capital and about $' + Math.max(1, Math.ceil(gas2 * 2)) + ' of gas on ' + second, time: '20 minutes' });
     }
     steps.push(
-      { text: 'Make one qualifying action each week, such as ' + weeklyActionFor(p) + '.', cost: 'about $' + Math.max(1, Math.ceil(gas)) + ' of gas on ' + chain + ' a week', time: '10 minutes a week' },
-      { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
-      { text: "Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
-      { text: 'Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.', cost: 'nothing but the log', time: '5 minutes' }
+      { text: 'Every week — Make one qualifying action each week, such as ' + weeklyActionFor(p) + '.', cost: 'about $' + Math.max(1, Math.ceil(gas)) + ' of gas on ' + chain + ' a week', time: '10 minutes a week' },
+      { text: 'Days 1–' + hold + ' — Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
+      { text: 'Day ' + hold + ' — Before you withdraw, open the protocol\'s own points or rewards page and claim only from the link it publishes.', cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
+      { text: 'Ongoing — Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.', cost: 'nothing but the log', time: '5 minutes' }
     );
     steps.push(farmSummary(p));
     return steps.map(stepText);
@@ -242,6 +248,7 @@
       else if (key === 'tvl') { av = a.tvl_usd; bv = b.tvl_usd; }
       else if (key === 'growth') { av = a.change_7d === null ? -Infinity : a.change_7d; bv = b.change_7d === null ? -Infinity : b.change_7d; }
       else if (key === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
+      else if (key === 'cost') { av = a.farm_sunk_usd; bv = b.farm_sunk_usd; }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
       if (av < bv) return -state.dir;
       if (av > bv) return state.dir;
@@ -339,6 +346,7 @@
       var badge = r.on_watchlist
         ? el('span', { class: 'badge watch', text: 'Watchlist' })
         : el('span', { class: 'badge early', text: 'Early' });
+      var conf = el('span', { class: 'badge conf-' + r.confidence, text: r.confidence === 'high' ? 'High confidence' : r.confidence === 'medium' ? 'Medium confidence' : 'Low confidence', title: r.confidence_reason });
       var tr = el('tr', {
         'data-selected': state.selected === r.slug ? 'true' : 'false',
         tabindex: '0',
@@ -357,14 +365,15 @@
           el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((r.implied_value_usd / max) * 100)) + '%' })),
           el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) })
         )),
-        el('td', null, badge)
+        el('td', { class: 'num', text: '$' + r.farm_sunk_usd + ' sunk' }),
+        el('td', null, badge, conf)
       );
       tbody.appendChild(tr);
     });
     return el('div', { class: 'panel' },
       el('div', { class: 'table-wrap' },
         el('table', null,
-          el('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. Select a row for its model and farm plan.' }),
+          el('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. Net cost is the sunk gas a farm plan costs. Select a row for its model and farm plan.' }),
           el('thead', null, el('tr', null,
             sortHeader('implied', 'Rank'),
             sortHeader('name', 'Protocol'),
@@ -372,6 +381,7 @@
             sortHeader('growth', '7d'),
             sortHeader('age', 'Age'),
             sortHeader('implied', 'Implied value'),
+            sortHeader('cost', 'Net cost'),
             el('th', { scope: 'col', text: 'List' })
           )),
           tbody
@@ -424,6 +434,11 @@
         'implied = min( round( tvl_usd x categoryMultiple x growth x maturity x breadth ), ' + m.ceiling_share + ' x category traded value ) — growth = 1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + '; maturity = ' + m.maturity_floor + ' + ' + (m.maturity_kink_value - m.maturity_floor).toFixed(1) + ' x age/' + m.maturity_kink_days + ' under ' + m.maturity_kink_days + ' days, else ' + m.maturity_kink_value + ' + 0.2 x (age - ' + m.maturity_kink_days + ')/' + (m.maturity_days - m.maturity_kink_days) + '; breadth = 1 + ' + m.breadth_step + ' x min(chains - 1, ' + m.breadth_max_chains + ')'
       ),
       el('p', { class: 'sub', text: 'The category multiple is the median market-cap-to-TVL ratio of the live-token protocols in the same category, shrunk toward the global median of ' + fmtMult(DATA.global_multiple) + ' and clamped to ' + m.comp_min + 'x-' + m.comp_max + 'x, so one thin comp cannot run away with the board. The ceiling is the category\u2019s own traded value: the sum of its live tokens\u2019 market caps, halved. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days.' }),
+      el('h3', { text: 'Tested blind on the tokens that already trade' }),
+      el('p', { text: 'Before the board is built, the pricing core is fitted on half the live tokens and scored on the other half it never saw. Even/odd by slug (' + DATA.validation.even_odd.test_n + ' held out) gives a rank correlation of ' + DATA.validation.even_odd.spearman + ' and a median miss of ' + DATA.validation.even_odd.median_abs_log_error + ' in log terms, with ' + DATA.validation.even_odd.within_2x + ' of ' + DATA.validation.even_odd.test_n + ' within 2x of the real market cap. Walk-forward — older tokens training the newer ones (' + DATA.validation.walk_forward.test_n + ' held out) — gives ' + DATA.validation.walk_forward.spearman + ' and a median miss of ' + DATA.validation.walk_forward.median_abs_log_error + ', with ' + DATA.validation.walk_forward.within_2x + ' of ' + DATA.validation.walk_forward.test_n + ' within 2x. A flat global multiple scores ' + DATA.validation.even_odd.flat_spearman + ' and ' + DATA.validation.walk_forward.flat_spearman + ' on the same splits, with a typical miss of ' + DATA.validation.even_odd.flat_median_abs_log_error + ' and ' + DATA.validation.walk_forward.flat_median_abs_log_error + ' — so the category fit does not out-rank a flat multiple on the tokens that already trade.' }),
+      el('p', { text: 'Read the numbers straight: a median miss near ' + DATA.validation.even_odd.median_abs_log_error + ' in log terms is roughly a ' + Math.round(Math.exp(DATA.validation.even_odd.median_abs_log_error)) + '-fold typical miss, so this model ranks roughly, it does not price to the dollar. The ceiling is not part of the test: applying it to held-out live tokens cuts the even/odd rank correlation from ' + DATA.validation.even_odd.spearman + ' to ' + DATA.validation.even_odd.ceiling_spearman + ', because a live token can be most of its category. The ceiling stays anyway, as a claim discipline for pre-token rows only — without it the board\u2019s top row would claim $622M. What the multiples do is price categories differently on the board itself: its top 10 shares only ' + DATA.validation.board_top10_tvl_overlap + ' of 10 rows with the TVL top 10, and its rank 1 sits at TVL rank ' + DATA.validation.board_rank1_tvl_rank + '.' }),
+      el('h3', { text: 'Research note' }),
+      el('p', { text: 'What the model assumes: a category\u2019s tokens keep trading near their median multiple, TVL persists, and a longer run with no token means a likelier launch, not a certain one. What would falsify it: a held-out rank correlation near zero, which the test above rules out on one split and barely clears on the other. What it cannot see: whether or when any protocol issues a token, a single week\u2019s growth spike, or gas prices moving — the farm plans use typical gas per chain, not a live quote. Implied value is the entry\u2019s own claim, never a price.' }),
       el('h3', { text: 'Category multiples, highest first' }),
       el('div', { class: 'table-wrap' },
         el('table', { class: 'comps' },
@@ -468,6 +483,8 @@
         el('div', null, el('span', { text: 'Category traded value' }), el('b', { class: 'num', text: row.category_live_mcap_usd ? fmtUsd(row.category_live_mcap_usd) : 'none — no live token in this category' })),
         el('div', null, el('span', { text: 'Ceiling (half of traded)' }), el('b', { class: 'num', text: row.ceiling_usd === null || row.ceiling_usd === undefined ? 'none' : fmtUsd(row.ceiling_usd) })),
         el('div', null, el('span', { text: 'Capped by the ceiling' }), el('b', { class: 'num', text: row.capped ? 'yes — the raw value was higher' : 'no' })),
+        el('div', null, el('span', { text: 'Confidence' }), el('b', { class: 'num', text: row.confidence + ' — ' + row.confidence_reason })),
+        el('div', null, el('span', { text: 'Net cost to farm' }), el('b', { class: 'num', text: '$' + row.farm_sunk_usd + ' sunk in gas + $' + row.farm_capital_usd + ' capital at risk, over ' + row.farm_days + ' days' })),
         el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
       el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + fmtUsd(recomputed) + (Math.abs(recomputed - row.implied_value_usd) / row.implied_value_usd > 0.005 ? ', which differs from the board: the data would be stale.' : ', the same number board.json carries.') + ' This is an estimate, not a price.' })

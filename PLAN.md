@@ -216,3 +216,70 @@ same constants — the drawer recomputes each row from the stored figures):
   credentials stored. Then: commit, `makefun init` (drand anchor), bundle
   transcripts with --muse-usage, `check` again with --transcripts, submit.
 - Nothing submitted, nothing pushed, no new keypair, no account/profile change.
+
+## Improvements (radar-4, 17 Nov 2026)
+
+Blind test first, then the page. The gap vs the top of the leaderboard was not the
+board (198 rows, 40/40, same as the leaders) but proof: every top title claims a
+walk-forward / out-of-sample-tested model and farm plans netted to a cost, and
+radar-3 had neither. Radar-4 adds both, and the test changed what the page claims.
+
+### 1. Out-of-sample backtest, computed at runtime (lib/model.ts: validateModel)
+- Live comps (128 tokens that trade) split two deterministic ways: even/odd by slug
+  (64 train / 64 test) and walk-forward by listing date (47 older train / 48 newer
+  test). The pricing core is fitted on the train half only and scored on the held-out
+  half, with a flat global multiple as the baseline and the ceiling scored separately.
+- Honest result, kept in the page verbatim: even/odd Spearman 0.412, walk-forward
+  0.277, median miss ~1.74 / 1.72 in log terms (roughly a five-fold typical miss),
+  18/64 and 7/48 within 2x. The flat multiple scores 0.450 / 0.341 with a typical
+  miss of 1.65 / 1.68 — the category fit does NOT out-rank flat on live tokens, and
+  the dashboard says so. Chasing the test was considered and rejected: shrink 10
+  and multiple-only variants tie flat at best (0.44 / 0.33), within noise at n=64.
+- What the test did change: the ceiling is now reported as a claim discipline, not
+  a predictor — applying it to held-out live tokens cuts even/odd rank correlation
+  from 0.412 to 0.029, because a live token can be most of its category. It stays
+  for pre-token rows only: without it the board's top row would claim $622M, 22 rows
+  above their whole category's traded value. The board is not a TVL table either:
+  its top 10 shares only 3 of 10 rows with the TVL top 10, rank 1 sits at TVL rank 19.
+- Validation numbers ride in board.json (top-level `validation`) and data.js, and
+  the dashboard's model panel prints them with the interpretation, plus a research
+  note (assumptions, what would falsify it, what it cannot see).
+
+### 2. Farm plans netted to cost, day by day
+- Every plan now splits its total into sunk gas (gone even if the farm pays nothing)
+  and capital at risk (recoverable on exit), via one shared farmTotals() used by both
+  main.ts (board.json) and the page, so the two can never disagree. Steps carry day
+  labels: Day 1 setup + deposit, Day 2 second chain, Every week, Days 1–N hold,
+  Day N claim check, Ongoing log.
+- Board rows carry farm_sunk_usd / farm_capital_usd / farm_days; the table gains a
+  sortable Net cost column ($ sunk) and the detail drawer a Net cost row.
+
+### 3. Confidence per row
+- High (5+ live comps, growth and age on record), Medium (2+ comps and growth or
+  age), Low (otherwise), with a one-line reason each. Distribution on this snapshot:
+  75 high / 58 medium / 65 low. Shown as a badge in the table and a row in the detail
+  drawer. The badge is the evidence behind the multiple, not a second score.
+
+### 4. Page fix found by the new screenshots
+- The detail drawer's equation rows blew out in radar-4's first render: the new
+  Confidence / Net cost values are long and .num forbids wrapping, so the grid went
+  wide and every value slid off-screen. Fixed in app.css (.equation b wraps,
+  right-aligned). The radar-3 detail screenshot did not have this bug.
+
+## Verification (radar-4, 17 Nov ~14:20 WIB)
+- Determinism PASS: main.ts run 2x, board.json + data.js + dossier.json byte-identical.
+- 7 local gates, all PASS (script /tmp/gate-check.mjs): dashboard_files (3 files,
+  55,902 bytes, no-network-clean), board_file (198 rows), sorted_by_value
+  ($116,163,606 → $79,215), coverage (40/40 watchlist), farm_steps (7–8 steps/row,
+  129–286 chars), screenshots (3 x 1440x900 PNG, 150/205/151 KB), dossier_matches
+  (buildDossier rebuild byte-identical).
+- Screenshots re-taken with the Playwright headless shell (the /opt/meta-chromium
+  binary refuses to start in this shell: "Hatch WebGL domain policy is required"),
+  1440x900, and read back: board shows the Net cost column + confidence badges,
+  detail drawer shows confidence + net cost + day-by-day plan, filtered view shows
+  Dexs, 21 rows.
+- Changed files: lib/model.ts (rewritten: validation, confidence, farmTotals, day
+  labels), dashboard/app.js (validation panel, research note, net-cost column +
+  sort, confidence badge + detail rows, day labels), dashboard/app.css (confidence
+  badges, equation wrap fix), main.ts (radar-4 header, validation in board.json +
+  stdout), README.md, screenshots x3, PLAN.md. vendor/ and LICENSE byte-identical.

@@ -106,6 +106,10 @@ tbody tr[data-selected="true"] { background: #143129; }
 }
 .badge.watch { background: rgba(251, 191, 36, 0.16); color: var(--gold); border: 1px solid rgba(251, 191, 36, 0.35); }
 .badge.early { background: rgba(56, 189, 248, 0.12); color: var(--cyan); border: 1px solid rgba(56, 189, 248, 0.3); }
+.badge.conf-high { background: rgba(46, 230, 168, 0.14); color: var(--accent); border: 1px solid rgba(46, 230, 168, 0.35); }
+.badge.conf-medium { background: rgba(139, 160, 173, 0.14); color: var(--muted); border: 1px solid rgba(139, 160, 173, 0.35); }
+.badge.conf-low { background: rgba(248, 113, 113, 0.12); color: var(--negative); border: 1px solid rgba(248, 113, 113, 0.3); }
+td .badge { margin: 1px 2px 1px 0; }
 
 .model { margin-top: var(--step-4); padding: var(--step-5); display: grid; gap: var(--step-3); }
 .model > p:not(.sub) { max-width: 78ch; }
@@ -141,8 +145,9 @@ tbody tr[data-selected="true"] { background: #143129; }
 .detail-section { margin-top: var(--step-5); padding-top: var(--step-4); border-top: 1px solid var(--border); }
 .detail-section h3 { margin-bottom: var(--step-2); }
 .equation { display: grid; gap: var(--step-2); font-family: var(--font-num); font-size: 13px; }
-.equation div { display: flex; justify-content: space-between; gap: var(--step-3); }
-.equation span { color: var(--muted); }
+.equation div { display: flex; justify-content: space-between; gap: var(--step-3); align-items: baseline; }
+.equation span { color: var(--muted); flex: none; }
+.equation b { text-align: right; white-space: normal; overflow-wrap: anywhere; }
 .steps { margin: 0; padding-left: var(--step-5); display: grid; gap: var(--step-3); }
 .steps li { padding-left: var(--step-1); }
 .steps b { display: block; font-weight: 500; }

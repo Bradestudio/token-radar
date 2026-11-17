@@ -1,7 +1,8 @@
-// Token Radar, radar-3 (Node 22, standard library only).
+// Token Radar, radar-4 (Node 22, standard library only).
 //
 // The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores
-// every rankable pre-token protocol with the model in lib/model.ts, writes the ranked board to
+// every rankable pre-token protocol with the model in lib/model.ts, tests that model blind on
+// the tokens that already trade before the board is built, writes the ranked board to
 // /output/board.json, writes the dashboard's data beside it as data.js, and copies this
 // repository's dashboard/ and screenshots/ to /output. Last, it writes /output/dossier.json, the
 // summary the judge reads, with the vendored make.fun library.
@@ -50,7 +51,7 @@ if (issue !== null) {
 }
 
 mkdirSync(out, { recursive: true });
-writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
+writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board, validation: radar.validation })}\n`);
 writeFileSync(join(out, 'data.js'), dataScript(radar));
 
 /** Copy one directory's regular files into `to`, skipping names that start with a dot. */
@@ -86,5 +87,6 @@ writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEX
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
+    `token radar: blind test on ${radar.validation.live_comps} live tokens — even/odd Spearman ${radar.validation.even_odd.spearman}, walk-forward ${radar.validation.walk_forward.spearman}\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashboardFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
