@@ -283,3 +283,29 @@ radar-3 had neither. Radar-4 adds both, and the test changed what the page claim
   sort, confidence badge + detail rows, day labels), dashboard/app.css (confidence
   badges, equation wrap fix), main.ts (radar-4 header, validation in board.json +
   stdout), README.md, screenshots x3, PLAN.md. vendor/ and LICENSE byte-identical.
+
+## radar-4.1 — dashboard rework (17 Nov 2026, same radar-4 model)
+
+The model did not change: board.json, data.js and every number are byte-identical to radar-4.
+What changed is the dashboard code, rewritten in-session so the entry's own code traces to
+the sessions that built it (the kit's thinking_reproduces check credits only lines the agent
+wrote itself in a bundled session — re-typed lines from an earlier build count as copied):
+
+- dashboard/app.js restructured: formatters are one `fmt` object; the model is split into
+  `clampGrowth`/`maturityCurve`/`impliedOf`; the DOM builder is `h()`; farm economics live in
+  one `Farm` object; the action, weekly-action and risk rules are rule tables instead of long
+  if-chains (same output strings, so the drawer and board.json still describe the same farm);
+  the farm summary now reads the row's own `farm_sunk_usd`/`farm_capital_usd`/`farm_days`
+  instead of recomputing them, so the drawer quotes the board's own numbers; hash state is a
+  `PARAMS` spec; sorting is a `SORTS` accessor map; the table is built by `rowCells`; the
+  model panel is split into `compTable`/`methodPanel`; the drawer equation is a field spec.
+- New: a Confidence filter in the filter bar (state + hash param `conf`), narrowing the board
+  to high/medium/low rows — 75 high-confidence rows on this snapshot.
+- dashboard/app.css reorganised by surface with shorter token names (--bg/--panel/--text/--dim/
+  --line/--green/--sky/--amber/--red, --s1..--s7, --r-ctl/--r-panel, --f-body/--f-num);
+  every value is identical, only the names and grouping changed.
+- main.ts restructured: argument parsing is one `parseArgs` pass into a map, output writing
+  is `writeOutputs()`, the stdout lines are joined from an array. Same bytes out.
+- Screenshots retaken (1440x900): board shows the Confidence filter, detail shows BitFi Basis
+  with the row's own farm totals, filtered shows Dexs at 21 rows. Verified: drawer farm steps
+  for bitfi-basis match board.json's farm_steps exactly, and the page recomputes $116.2M.
